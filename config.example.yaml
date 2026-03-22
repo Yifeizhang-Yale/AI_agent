@@ -1,0 +1,109 @@
+## HPC Data Management Agent — Configuration
+## Copy this file to config.yaml and edit for your environment.
+
+database_path: /path/to/dm_agent.db
+lab_context_path: lab_context.yaml
+
+# HPC usernames with admin access (can run full cycles, see all data)
+admin_users:
+  - your_hpc_username
+
+# Directories to scan
+scan_targets:
+  - path: /lustre/project/mylab
+    description: "Lab shared project space"
+  # - path: /gpfs/scratch/mylab
+  #   description: "Scratch space"
+
+# Email settings
+email:
+  smtp_host: smtp.university.edu
+  smtp_port: 587
+  from_address: hpc-data-agent@university.edu
+  use_tls: true
+  # Credentials: set DM_SMTP_USER and DM_SMTP_PASS environment variables
+  # Or specify directly (not recommended):
+  # smtp_user: ""
+  # smtp_pass: ""
+
+# Deletion confirmation settings
+confirmation:
+  method: token_cli   # token_cli = user runs CLI command; email_reply = parse inbox
+  expiry_days: 7
+  # Only needed if method is email_reply:
+  # imap_host: imap.university.edu
+  # imap_user: ""  # Or set DM_IMAP_USER env var
+  # imap_pass: ""  # Or set DM_IMAP_PASS env var
+
+# Scanner settings
+scanner:
+  stale_threshold_days: 90
+  exclude_patterns:
+    - ".snapshot"
+    - ".Trash"
+    - "__pycache__"
+    - ".git"
+  max_depth: 5
+
+# Claude backend settings
+# backend: "cli" uses `claude` command (Claude Code), no API key needed
+# backend: "api" uses anthropic Python SDK, requires ANTHROPIC_API_KEY
+analyzer:
+  backend: cli               # cli (recommended) | api
+  # model: claude-sonnet-4-20250514  # optional: override model for API backend
+  max_tokens: 4096
+
+# Skill configuration — enable/disable and configure each skill
+skills:
+  scanner:
+    enabled: true
+    stale_threshold_days: 90
+    exclude_patterns:
+      - ".snapshot"
+      - ".Trash"
+      - "__pycache__"
+      - ".git"
+    max_depth: 5
+
+  analyzer:
+    enabled: true
+    model: claude-sonnet-4-20250514
+    max_tokens: 4096
+    batch_size: 10
+
+  reporter:
+    enabled: true
+
+  confirmer:
+    enabled: true
+
+  deleter:
+    enabled: true
+    dry_run: true              # IMPORTANT: set to false only after testing
+    trash_dir: /lustre/trash/dm_agent  # null for permanent delete
+
+  quota_monitor:
+    enabled: true
+    method: auto               # auto | lfs | mmlsquota | du
+    warning_threshold: 0.8     # 80%
+    critical_threshold: 0.9    # 90%
+    quotas:                    # Per-project quota limits
+      # project_a:
+      #   limit_bytes: 1099511627776  # 1TB
+
+  readme_generator:
+    enabled: true
+    auto_write: false          # false = suggest only; true = write directly
+
+  data_cataloger:
+    enabled: true
+    scan_depth: 3              # How deep to scan within each dataset
+    model: claude-sonnet-4-20250514
+    datasets:                  # One dataset is processed per run
+      - name: UKB
+        path: /lustre/project/mylab/UKB
+      - name: ABCD
+        path: /lustre/project/mylab/ABCD
+      - name: HCP
+        path: /lustre/project/mylab/HCP
+      # Add more datasets here — they will be cataloged one by one
