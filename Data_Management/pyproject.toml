@@ -9,6 +9,9 @@ description = "HPC Data Management Agent - automated scanning, analysis, and cle
 requires-python = ">=3.9"
 dependencies = [
     "pyyaml>=6.0",
+    "scipy>=1.10.0",
+    "h5py>=3.8.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
