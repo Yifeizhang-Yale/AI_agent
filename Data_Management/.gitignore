@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+
+# Database & runtime
+dm_agent.db
+*.db-journal
+
+# Config with credentials (examples are committed)
+config.yaml
+lab_context.yaml
+
+# Slurm logs
+*.err
+*.log
+slurm/
+
+# Generated outputs (large)
+LAB_DATA_OVERVIEW.md
+DATA_MANIFEST.yaml
+participants/
+
+# OS
+.DS_Store
+.claude/
+.pytest_cache/
+
+# Bin (local scripts)
+bin/
