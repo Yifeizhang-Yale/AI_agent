@@ -29,5 +29,8 @@ participants/
 .claude/
 .pytest_cache/
 
-# Bin (local scripts)
-bin/
+# Generated inventory
+gibbs_inventory.db
+
+# Version files
+version_files/

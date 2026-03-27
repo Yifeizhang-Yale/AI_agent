@@ -1,0 +1,20 @@
+#!/bin/bash
+# DM Agent wrapper — run from anywhere on the HPC
+# Usage: dm-agent catalog --dataset HCP
+#        dm-agent organize --dataset A4 --dry-run
+#        dm-agent status
+
+AGENT_DIR="${DM_AGENT_DIR:-/nfs/roberts/pi/pi_yz875/AI_Agent/Data_Management}"
+
+source "${AGENT_DIR}/venv/bin/activate"
+
+if [ -f "${AGENT_DIR}/.env" ]; then
+    set -a
+    source "${AGENT_DIR}/.env"
+    set +a
+fi
+
+# Load required modules for Claude CLI on compute nodes
+module load GCCcore/13.3.0 nodejs/20.13.1-GCCcore-13.3.0 2>/dev/null
+
+exec python -m dm_agent -c "${AGENT_DIR}/config.yaml" "$@"

@@ -1,2 +1,0 @@
-[console_scripts]
-dm-agent = dm_agent.__main__:main

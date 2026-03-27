@@ -618,6 +618,51 @@ def cmd_participants(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent(args: argparse.Namespace) -> int:
+    """Interactive agent mode — give it natural language goals."""
+    from dm_agent.agent_loop import AgentLoop
+
+    config = load_config(args.config)
+    db = Database(config.database_path)
+    agent = AgentLoop(config, db, model=args.model)
+
+    if args.goal:
+        # One-shot mode
+        print(agent.run(args.goal))
+        return 0
+
+    # Interactive REPL
+    print("DM Agent interactive mode")
+    print("Type your goal in natural language. Type 'exit' to quit, 'reset' to clear history.\n")
+
+    while True:
+        try:
+            goal = input("[dm-agent] > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not goal:
+            continue
+        if goal in ("exit", "quit", "q"):
+            break
+        if goal == "reset":
+            agent.reset()
+            print("Conversation history cleared.")
+            continue
+
+        try:
+            response = agent.chat(goal)
+            print(f"\n{response}\n")
+        except KeyboardInterrupt:
+            print("\n(interrupted)")
+        except Exception as e:
+            logger.error(f"Agent error: {e}", exc_info=True)
+            print(f"Error: {e}")
+
+    return 0
+
+
 def _refresh_lab_overview(context) -> None:
     """Regenerate LAB_DATA_OVERVIEW.md after any data change."""
     try:
@@ -702,6 +747,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_participants.add_argument("--dataset", "-d", required=True, help="Dataset name")
     p_participants.add_argument("--output", "-o", help="Output path (default: <dataset_path>/participants.tsv)")
 
+    # agent — LLM-driven interactive agent mode
+    p_agent = subparsers.add_parser("agent", help="Interactive agent mode (natural language goals)")
+    p_agent.add_argument("goal", nargs="?", default=None, help="Goal to accomplish (omit for interactive REPL)")
+    p_agent.add_argument("--model", help="Override Claude model (default: from config or claude-sonnet-4-20250514)")
+
     return parser
 
 
@@ -719,6 +769,7 @@ def main() -> int:
         "query": cmd_query,
         "organize": cmd_organize,
         "participants": cmd_participants,
+        "agent": cmd_agent,
     }
 
     try:
