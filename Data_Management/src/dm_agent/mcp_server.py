@@ -1,12 +1,15 @@
-"""MCP Server — exposes dm-agent READ-ONLY tools to lab members' Claude Code.
+"""MCP Server — exposes dm-agent tools to lab members' Claude Code.
 
-Lab members get:
+Everyone gets:
   - Data search and discovery (read-only DB access)
   - Directory inspection (filesystem read)
   - Feedback submission (writes to a separate feedback file, not the main DB)
 
-Admin operations (catalog, organize, delete) are NOT exposed here.
-Those go through the CLI or agent mode.
+Admin users (configured in config.yaml admin_users) additionally get:
+  - Dataset cataloging
+  - Dataset organization / cleanup
+  - README generation
+  - Lab overview refresh
 
 Setup for lab members:
   bin/setup-claude-code.sh
@@ -42,19 +45,27 @@ _feedback_path = os.environ.get(
     str(Path(_config.database_path).parent / "feedback.jsonl"),
 )
 
+_current_user = os.environ.get("USER", os.environ.get("LOGNAME", ""))
+_is_admin = _current_user in _config.admin_users
+
 # ---------------------------------------------------------------------------
 # MCP Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
-    "dm-agent",
-    instructions=(
-        "Zhao Lab HPC data management tools. Use these to help lab members "
-        "find neuroimaging data across datasets: A4, ABCD, ADNI, Atlas, HCP, "
-        "IMAGEN, NACC, OHSU, UKB. All tools are read-only. "
-        "Use dm_submit_feedback to send requests to the data admin."
-    ),
+_instructions = (
+    "Zhao Lab HPC data management tools. Use these to help lab members "
+    "find neuroimaging data across datasets: A4, ABCD, ADNI, Atlas, HCP, "
+    "IMAGEN, NACC, OHSU, UKB. "
+    "Use dm_submit_feedback to send requests to the data admin."
 )
+if _is_admin:
+    _instructions += (
+        f" You are running as admin ({_current_user}). "
+        "You also have write tools: dm_catalog_dataset, dm_organize_dataset, "
+        "dm_generate_readme, dm_refresh_overview."
+    )
+
+mcp = FastMCP("dm-agent", instructions=_instructions)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +79,33 @@ def _human_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f}{unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f}PB"
+
+
+def _make_context():
+    """Create a RunContext for skill execution (admin tools only)."""
+    from dm_agent.base_skill import RunContext
+
+    return RunContext(
+        config=_config,
+        db=_db,
+        lab_context={
+            "lab": _config.lab,
+            "members": [
+                {"name": m.name, "email": m.email, "projects": m.projects, "role": m.role}
+                for m in _config.members
+            ],
+            "projects": {
+                name: {"description": p.description, "data_types": p.data_types, "retention": p.retention}
+                for name, p in _config.projects.items()
+            },
+        },
+        run_timestamp=datetime.utcnow(),
+    )
+
+
+# ===========================================================================
+# READ-ONLY TOOLS — available to everyone
+# ===========================================================================
 
 
 # ---------------------------------------------------------------------------
@@ -268,19 +306,16 @@ def dm_dataset_info(dataset: str) -> str:
             "dir_count": ms.get("dir_count", 0),
             "description": ms.get("description"),
         }
-        # Include data stages
         try:
             mod_info["data_stages"] = json.loads(ms.get("data_stages") or "[]")
         except (ValueError, TypeError):
             mod_info["data_stages"] = []
-        # Include key directories
         try:
             mod_info["key_dirs"] = json.loads(ms.get("key_dirs") or "[]")
         except (ValueError, TypeError):
             mod_info["key_dirs"] = []
         info["modalities"].append(mod_info)
 
-    # Include recommendations if available
     if ds.get("recommendations"):
         try:
             recs = json.loads(ds["recommendations"])
@@ -403,9 +438,141 @@ def dm_submit_feedback(message: str, category: str = "general") -> str:
 
     return json.dumps({
         "success": True,
-        "message": f"Feedback submitted. The data admin will review it.",
+        "message": "Feedback submitted. The data admin will review it.",
         "reference": entry["timestamp"],
     })
+
+
+# ===========================================================================
+# ADMIN-ONLY TOOLS — only registered when current user is admin
+# ===========================================================================
+
+if _is_admin:
+
+    @mcp.tool()
+    def dm_catalog_dataset(dataset: str) -> str:
+        """[Admin] Deep-catalog a dataset: scan structure, identify modalities,
+        count subjects, classify data stages, check BIDS compliance.
+
+        Args:
+            dataset: Dataset name (A4, ABCD, ADNI, Atlas, HCP, IMAGEN, NACC, OHSU, UKB)
+        """
+        cat_cfg = _config.skills.get("data_cataloger", {})
+        datasets = cat_cfg.get("datasets", [])
+        matched = [d for d in datasets if d["name"] == dataset]
+        if not matched:
+            return json.dumps({
+                "error": f"Dataset '{dataset}' not found",
+                "available": [d["name"] for d in datasets],
+            })
+
+        # Reset to pending
+        ds_id = _db.get_or_create_dataset(matched[0]["name"], matched[0]["path"])
+        _db.update_dataset_status(ds_id, "pending")
+
+        # Override config temporarily
+        original = cat_cfg.get("datasets", [])
+        _config.skills["data_cataloger"]["datasets"] = matched
+
+        try:
+            from dm_agent.skills.data_cataloger import DataCatalogerSkill
+
+            skill = DataCatalogerSkill()
+            result = skill.run(_make_context())
+        finally:
+            _config.skills["data_cataloger"]["datasets"] = original
+
+        return json.dumps({
+            "success": result.success,
+            "message": result.message,
+            **result.data,
+        }, ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def dm_organize_dataset(dataset: str, dry_run: bool = True) -> str:
+        """[Admin] Reorganize a dataset: remove redundant files and restructure.
+
+        ALWAYS use dry_run=True first to preview the plan before executing.
+
+        Args:
+            dataset: Dataset name to organize
+            dry_run: If True, preview plan without executing. Always try True first.
+        """
+        _config.skills.setdefault("dataset_organizer", {})
+        _config.skills["dataset_organizer"]["enabled"] = True
+        _config.skills["dataset_organizer"]["target_dataset"] = dataset
+        _config.skills["dataset_organizer"]["dry_run"] = dry_run
+        _config.skills["dataset_organizer"]["no_reorganize"] = False
+
+        from dm_agent.skills.dataset_organizer import DatasetOrganizerSkill
+
+        skill = DatasetOrganizerSkill()
+        result = skill.run(_make_context())
+
+        return json.dumps({
+            "success": result.success,
+            "message": result.message,
+            "dry_run": dry_run,
+            **result.data,
+        }, ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def dm_generate_readme(dir_path: str) -> str:
+        """[Admin] Generate a README.md for a directory using Claude.
+
+        Returns generated content for review. Does NOT write to disk automatically.
+
+        Args:
+            dir_path: Absolute path to the directory
+        """
+        if not os.path.isdir(dir_path):
+            return json.dumps({"error": f"Directory not found: {dir_path}"})
+
+        try:
+            tree_proc = subprocess.run(
+                ["find", dir_path, "-maxdepth", "3", "-type", "f"],
+                capture_output=True, text=True, timeout=30,
+            )
+            tree = tree_proc.stdout.strip()
+        except Exception:
+            tree = "(could not list directory)"
+
+        from dm_agent.claude_client import create_client
+
+        client = create_client(_config.analyzer)
+        system = (
+            "You are a documentation assistant for a neuroimaging data lab. "
+            "Generate a concise, informative README.md for the given directory. "
+            "Include: purpose, data organization, file formats, and usage notes."
+        )
+        prompt = (
+            f"Directory: {dir_path}\n\n"
+            f"File listing (max depth 3):\n{tree[:8000]}\n\n"
+            f"Generate a README.md for this directory."
+        )
+
+        readme_content = client.ask(system, prompt)
+
+        return json.dumps({
+            "success": True,
+            "message": "README generated (not written to disk).",
+            "dir_path": dir_path,
+            "readme_content": readme_content,
+        }, ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def dm_refresh_overview() -> str:
+        """[Admin] Regenerate LAB_DATA_OVERVIEW.md and DATA_MANIFEST.yaml from the catalog database."""
+        from dm_agent.skills.lab_overview import LabOverviewSkill
+
+        skill = LabOverviewSkill()
+        result = skill.run(_make_context())
+
+        return json.dumps({
+            "success": result.success,
+            "message": result.message,
+            **result.data,
+        }, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
